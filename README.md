@@ -120,3 +120,4 @@ online.
 - Pictures of places and their captions are Bing's daily images (Microsoft). The launcher fetches them on your
   own TV; the promo pictures above show three of them.
 - Gotham, used in the promo pictures only, is a Hoefler&Co. typeface and is not part of this repository.
+
