@@ -3,6 +3,7 @@ package com.gathin.tvhome;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -79,6 +80,15 @@ final class Glider extends View {
     /** How far the shadow is shown: it comes in as the glider turns to glass, and goes with the dark. */
     private float shadowMix;
     private ValueAnimator shadowFade;
+    /**
+     * The kart that rides the top edge of the glass between apps. The picture faces left as drawn; it
+     * is mirrored to face right when the shape is heading right, and keeps its last way for up and down.
+     */
+    private final Bitmap kart;
+    private final RectF kartBox = new RectF();
+    private final Paint kartPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final float kartW, kartH, kartDip;
+    private boolean kartFacesRight;
     private final List<View> companions = new ArrayList<>();
     /** Per companion, the part of it the shape matters to (in its own coordinates), or null for all of it. */
     private final List<RectF> companionAreas = new ArrayList<>();
@@ -103,6 +113,11 @@ final class Glider extends View {
         rim = new GlassRim(1.5f * density, 0xD9FFFFFF, 0x1AFFFFFF);
         shadowBlur = 22f * density;
         shadowDrop = 8f * density;
+        kartW = 60f * density;
+        kartH = kartW * 132f / 176f;
+        // How far its wheels dip below the top edge of the glass, so it looks like it sits on it.
+        kartDip = 6f * density;
+        kart = loadKart(context);
         Backdrop.watch(this);
         setFocusable(false);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -191,6 +206,8 @@ final class Glider extends View {
      */
     void moveTo(float l, float t, float r, float b, float radius) {
         float[] to = aim(l, t, r, b, radius);
+        float fromX = (edges[LEFT] + edges[RIGHT]) / 2f, toX = (to[LEFT] + to[RIGHT]) / 2f;
+        if (shown && Math.abs(toX - fromX) > 1f) kartFacesRight = toX > fromX;
         if (!shown) {
             for (int i = 0; i < springs.length; i++) {
                 springs[i].cancel();
@@ -299,6 +316,31 @@ final class Glider extends View {
         rim.fit(shape);
         rim.paint.setAlpha(Math.round(255 * opacity));
         canvas.drawRoundRect(shape, r - half, r - half, rim.paint);
+        drawKart(canvas, (edges[LEFT] + edges[RIGHT]) / 2f + dx, t + dy);
+    }
+
+    private static Bitmap loadKart(Context context) {
+        try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inScaled = false;
+            return BitmapFactory.decodeResource(context.getResources(), R.drawable.kart, o);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** The kart, centred on the shape's top edge; it bounces a little while the shape is on the move. */
+    private void drawKart(Canvas canvas, float cx, float top) {
+        if (kart == null || opacity <= 0f) return;
+        float bob = 0f;
+        if (moving()) bob = (float) Math.sin(System.nanoTime() / 45_000_000.0) * kartDip * 0.35f;
+        float bottom = top + kartDip + bob;
+        kartBox.set(cx - kartW / 2f, bottom - kartH, cx + kartW / 2f, bottom);
+        kartPaint.setAlpha(Math.round(255 * opacity));
+        canvas.save();
+        if (kartFacesRight) canvas.scale(-1f, 1f, cx, 0f);
+        canvas.drawBitmap(kart, null, kartBox, kartPaint);
+        canvas.restore();
     }
 
     private void drawShadow(Canvas canvas, float radius) {
