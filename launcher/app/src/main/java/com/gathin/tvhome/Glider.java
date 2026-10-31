@@ -56,6 +56,9 @@ final class Glider extends View {
         }
     }
 
+    /** How far the kart leans forward at full speed. */
+    private static final float KART_LEAN_DEGREES = 6f;
+
     private static final int LEFT = 0, TOP = 1, RIGHT = 2, BOTTOM = 3, RADIUS = 4;
 
     /** Left, top, right, bottom (top and bottom in scroll-free space) and corner radius. */
@@ -89,6 +92,17 @@ final class Glider extends View {
     private final Paint kartPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final float kartW, kartH, kartDip;
     private boolean kartFacesRight;
+    /** How fast the shape is travelling (px/s, smoothed), and the last frame it was measured on. */
+    private float kartSpeed, lastCx, lastCy;
+    private long lastNs, settleFrom;
+    private boolean wasMoving, settlePosted;
+    private final float kartFullSpeed;
+    private final Paint dustPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** Keeps the kart's little hop going for a moment after the shape has come to rest. */
+    private final Runnable settleTick = () -> {
+        settlePosted = false;
+        changed();
+    };
     private final List<View> companions = new ArrayList<>();
     /** Per companion, the part of it the shape matters to (in its own coordinates), or null for all of it. */
     private final List<RectF> companionAreas = new ArrayList<>();
@@ -117,6 +131,7 @@ final class Glider extends View {
         kartH = kartW * 132f / 176f;
         // How far its wheels dip below the top edge of the glass, so it looks like it sits on it.
         kartDip = 6f * density;
+        kartFullSpeed = 1200f * density;
         kart = loadKart(context);
         Backdrop.watch(this);
         setFocusable(false);
@@ -329,18 +344,74 @@ final class Glider extends View {
         }
     }
 
-    /** The kart, centred on the shape's top edge; it bounces a little while the shape is on the move. */
+    /**
+     * The kart, centred on the shape's top edge. While the shape travels it leans into the drive,
+     * bounces a little and kicks up dust behind it; when the shape stops it hops and settles.
+     */
     private void drawKart(Canvas canvas, float cx, float top) {
         if (kart == null || opacity <= 0f) return;
-        float bob = 0f;
-        if (moving()) bob = (float) Math.sin(System.nanoTime() / 45_000_000.0) * kartDip * 0.35f;
-        float bottom = top + kartDip + bob;
+        long now = System.nanoTime();
+        float rawX = (edges[LEFT] + edges[RIGHT]) / 2f, rawY = edges[TOP];
+        if (lastNs == 0 || now - lastNs > 250_000_000L) {
+            kartSpeed = 0f;
+            lastNs = now;
+            lastCx = rawX;
+            lastCy = rawY;
+        } else if (now - lastNs > 4_000_000L) {
+            float dt = (now - lastNs) / 1e9f;
+            float v = (float) Math.hypot(rawX - lastCx, rawY - lastCy) / dt;
+            kartSpeed += (v - kartSpeed) * 0.35f;
+            lastNs = now;
+            lastCx = rawX;
+            lastCy = rawY;
+        }
+        float go = Math.min(1f, kartSpeed / kartFullSpeed);
+        boolean on = moving();
+        if (on) {
+            settleFrom = 0;
+            wasMoving = true;
+        } else if (wasMoving) {
+            wasMoving = false;
+            settleFrom = now;
+        }
+        float hop = 0f;
+        if (!on && settleFrom != 0) {
+            float ms = (now - settleFrom) / 1e6f;
+            if (ms < 450f) {
+                hop = -kartDip * 1.6f * (float) Math.exp(-ms / 130f) * Math.abs((float) Math.sin(ms / 60f));
+                if (!settlePosted) {
+                    settlePosted = true;
+                    postOnAnimation(settleTick);
+                }
+            } else {
+                settleFrom = 0;
+            }
+        }
+        float bob = on ? (float) Math.sin(now / 45_000_000.0) * kartDip * 0.35f * Math.max(go, 0.3f) : 0f;
+        float bottom = top + kartDip + bob + hop;
+        float dir = kartFacesRight ? 1f : -1f;
+        if (go > 0.12f) drawDust(canvas, cx - dir * kartW * 0.42f, bottom - kartH * 0.1f, -dir, go, now);
         kartBox.set(cx - kartW / 2f, bottom - kartH, cx + kartW / 2f, bottom);
         kartPaint.setAlpha(Math.round(255 * opacity));
         canvas.save();
         if (kartFacesRight) canvas.scale(-1f, 1f, cx, 0f);
+        // Nose down a few degrees at speed; the mirror above makes this lean the right way both ways.
+        canvas.rotate(-KART_LEAN_DEGREES * go, cx, bottom);
         canvas.drawBitmap(kart, null, kartBox, kartPaint);
         canvas.restore();
+    }
+
+    /** Three puffs trailing behind the rear wheels, each growing and fading as it drifts away. */
+    private void drawDust(Canvas canvas, float x, float y, float away, float go, long now) {
+        float base = (now / 1_000_000L % 420) / 420f;
+        for (int i = 0; i < 3; i++) {
+            float ph = (base + i / 3f) % 1f;
+            float r = kartW * (0.05f + 0.10f * ph);
+            float px = x + away * ph * kartW * 0.7f;
+            float py = y - ph * kartH * 0.18f;
+            dustPaint.setColor(((int) (150 * (1f - ph) * go * opacity) << 24) | 0xFFFFFF);
+            canvas.drawCircle(px, py, r, dustPaint);
+        }
     }
 
     private void drawShadow(Canvas canvas, float radius) {
